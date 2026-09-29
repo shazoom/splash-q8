@@ -602,7 +602,10 @@ class ServerTest(unittest.TestCase):
         harness = self.harness(runtime)
         status, _, payload = harness.request("GET", "/internal/capabilities")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(payload)["session_protocol_version"], 6)
+        capabilities = json.loads(payload)
+        self.assertEqual(capabilities["session_protocol_version"], 6)
+        self.assertEqual(capabilities["idle_cache_sessions"], 16)
+        self.assertEqual(capabilities["idle_cache_bytes"], 8 * 1024**3)
         for protocol, body in (
             ("chat", self.body()),
             ("responses", self.responses_body()),

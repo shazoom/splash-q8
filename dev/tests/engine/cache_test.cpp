@@ -338,6 +338,7 @@ void testSessionHeadsAndCompletionOrder() {
 }
 
 void testSessionCountAndByteLimits() {
+  static_assert(engine::Cache::maxIdleCacheBytes == 8ULL * 1024 * 1024 * 1024);
   Backing backing(32);
   KvPool pool(backing);
   engine::Cache cache(pool, cacheNamespace(), true);
@@ -368,6 +369,34 @@ void testSessionCountAndByteLimits() {
   }
   require(bounded.snapshot().kvCache.bytes <= 2 * 4096,
           "retained idle KV exceeded the byte limit");
+  require(bounded.lookup(tokens(33, 100)).kvBoundary == 0 &&
+              bounded.lookup(tokens(33, 300)).kvBoundary == 32,
+          "byte limit evicted a newer head instead of the oldest");
+}
+
+void testSessionByteLimitDoesNotEvictActiveTip() {
+  Backing backing(8);
+  KvPool pool(backing);
+  engine::Cache cache(pool, cacheNamespace(), true, 4096);
+  auto activePrompt = tokens(65, 100);
+  cache.beginRequest(1);
+  require(cache.ensureTokens(1, 64).granted(), "active session admission failed");
+  static_cast<void>(cache.publishCommittedBlocks(1, activePrompt, 64));
+  cache.promoteSession(1, 1, 64);
+
+  auto idlePrompt = tokens(33, 200);
+  cache.beginRequest(2);
+  require(cache.ensureTokens(2, 32).granted(), "idle session admission failed");
+  static_cast<void>(cache.publishCommittedBlocks(2, idlePrompt, 32));
+  cache.promoteSession(2, 2, 32);
+  cache.endRequest(2);
+  require(cache.blockAt(1, 64) != 0 &&
+              cache.snapshot().pool.pagesActive == 2,
+          "idle budget trimming evicted an active session tip");
+
+  cache.endRequest(1);
+  require(cache.snapshot().kvCache.bytes <= 4096,
+          "idle cache remained over budget after active work ended");
 }
 
 int main() {
@@ -381,6 +410,7 @@ int main() {
     testReplacementPreservesBackingEvenWhenExtentBecomesEmpty();
     testSessionHeadsAndCompletionOrder();
     testSessionCountAndByteLimits();
+    testSessionByteLimitDoesNotEvictActiveTip();
     std::cout << "engine cache tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {
