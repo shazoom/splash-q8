@@ -27,6 +27,7 @@ enum class EngineCacheStatus : uint8_t { Miss, PrefixHit };
 
 struct EngineRequest final {
   uint64_t id = 0;
+  uint64_t sessionId = 0;
   RequestPriority priority = RequestPriority::Normal;
   BatchCohort cohort = BatchCohort::Greedy;
   std::vector<uint32_t> prompt;

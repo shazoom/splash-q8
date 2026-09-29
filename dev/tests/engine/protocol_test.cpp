@@ -148,23 +148,25 @@ void testRequestWireAndRoundTrip() {
   const auto &wire = *serialized.value;
 
   CHECK(test, wire.size() ==
-                  kFrameHeaderBytes + 60 + request.promptTokens.size() * 4);
+                  kFrameHeaderBytes + 68 + request.promptTokens.size() * 4);
   CHECK(test, std::string(wire.begin(), wire.begin() + 4) == "SPLH");
   CHECK(test, loadU16(wire, 4) == kProtocolVersion);
   CHECK(test, loadU16(wire, 6) == kFrameHeaderBytes);
   CHECK(test, loadU16(wire, 8) == static_cast<uint16_t>(FrameType::Request));
   CHECK(test, loadU16(wire, 10) == 0);
-  CHECK(test, loadU64(wire, 12) == 60 + request.promptTokens.size() * 4);
+  CHECK(test, loadU64(wire, 12) == 68 + request.promptTokens.size() * 4);
   CHECK(test, loadU32(wire, 20) == 0);
   CHECK(test, loadU64(wire, kFrameHeaderBytes) == request.requestId);
   CHECK(test,
         loadU32(wire, kFrameHeaderBytes + 31) == request.promptTokens.size());
   CHECK(test, loadU32(wire, kFrameHeaderBytes + 35) == 0);
-  CHECK(test, loadU32(wire, kFrameHeaderBytes + 60) == 0);
-  CHECK(test, loadU32(wire, kFrameHeaderBytes + 60 + 16) == 0xffffffffU);
+  CHECK(test, loadU32(wire, kFrameHeaderBytes + 68) == 0);
+  CHECK(test, loadU32(wire, kFrameHeaderBytes + 68 + 16) == 0xffffffffU);
 
   RequestFrame decoded = roundTrip(request);
   CHECK(test, decoded == request);
+  request.sessionId = 0x123456789abcdef0ULL;
+  CHECK(test, roundTrip(request) == request);
 
   RequestFrame withImage = exampleImageRequest();
   auto imageWire = serializeMessage(Message{withImage});
@@ -172,7 +174,7 @@ void testRequestWireAndRoundTrip() {
   if (!imageWire)
     return;
   const size_t spanOffset =
-      kFrameHeaderBytes + 60 + withImage.promptTokens.size() * 4;
+      kFrameHeaderBytes + 68 + withImage.promptTokens.size() * 4;
   CHECK(test, imageWire.value->size() ==
                   spanOffset + 32 + withImage.imagePixels.size());
   CHECK(test, loadU32(*imageWire.value, kFrameHeaderBytes + 35) == 1);

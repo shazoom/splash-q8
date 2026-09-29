@@ -86,6 +86,65 @@ class LauncherTests(unittest.TestCase):
                             ["serve", "--model", MODEL_ID, f"{flag}={value}"]
                         )
 
+    def test_port_selection_and_client_discovery(self):
+        self.assertEqual(launcher.PORT, 18080)
+        self.assertEqual(
+            launcher.parse_args(["serve", "--model", MODEL_ID]).port, 18080
+        )
+        self.assertEqual(
+            launcher.parse_args(["serve", "--model", MODEL_ID, "--port", "18181"]).port,
+            18181,
+        )
+        for port in ("0", "65536", "-1"):
+            with self.subTest(port=port), mock.patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_args(["serve", "--model", MODEL_ID, "--port", port])
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            with mock.patch.object(launcher, "RUNTIME_DIR", runtime):
+                self.assertEqual(launcher._base_url(), launcher.BASE_URL)
+                (runtime / "serve.lock").write_text(
+                    json.dumps({"pid": os.getpid(), "model": MODEL_ID, "port": 18181})
+                )
+                self.assertEqual(launcher._base_url(), launcher.BASE_URL)
+                with (runtime / "serve.lock").open() as held:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.assertEqual(launcher._base_url(), "http://127.0.0.1:18181")
+
+    def test_occupied_selected_port_fails_before_model_work(self):
+        with socket.socket() as occupied, tempfile.TemporaryDirectory() as temporary:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            with (
+                mock.patch.object(launcher, "RUNTIME_DIR", Path(temporary)),
+                mock.patch.object(launcher, "_ensure_installed") as install,
+                mock.patch("sys.stderr", io.StringIO()) as error,
+            ):
+                self.assertEqual(
+                    launcher.main(["serve", "--model", MODEL_ID, "--port", str(port)]),
+                    1,
+                )
+            self.assertIn(f"127.0.0.1:{port} is in use", error.getvalue())
+            install.assert_not_called()
+
+    def test_prebuilt_serve_never_builds_or_prepares_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(launcher, "RUNTIME_DIR", Path(temporary)),
+                mock.patch.object(launcher.socket, "socket"),
+                mock.patch.object(launcher, "_ensure_prebuilt") as verify,
+                mock.patch.object(launcher, "_ensure_installed") as install,
+                mock.patch.object(launcher.catalog, "spawn_refresh"),
+                mock.patch.object(
+                    launcher.os, "execve", side_effect=RuntimeError("stop")
+                ),
+                self.assertRaisesRegex(RuntimeError, "stop"),
+            ):
+                launcher.main(["serve", "--prebuilt", "--model", MODEL_ID])
+        verify.assert_called_once_with(MODEL_ID)
+        install.assert_not_called()
+
     def test_foreground_exec_preserves_terminal_and_holds_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary)
@@ -116,6 +175,7 @@ class LauncherTests(unittest.TestCase):
                     argv[argv.index("--binary") + 1], str(launcher.paths.BINARY)
                 )
                 self.assertEqual(argv[argv.index("--model") + 1], MODEL_ID)
+                self.assertEqual(argv[argv.index("--port") + 1], "18080")
                 self.assertEqual(
                     argv[-4:],
                     ["--allowed-host", "splash.local", "--allowed-host", "proxy.local"],

@@ -215,6 +215,21 @@ uint32_t KvCache::chainLength(uint64_t blockId) const {
   return block(blockId).depth;
 }
 
+std::vector<uint64_t> KvCache::blockIdsNewestFirst() const {
+  std::vector<uint64_t> ids;
+  ids.reserve(blocks_.size());
+  for (const auto &[id, unused] : blocks_)
+    ids.push_back(id);
+  std::sort(ids.begin(), ids.end(), std::greater<uint64_t>{});
+  return ids;
+}
+
+bool KvCache::evictable(uint64_t blockId) const noexcept {
+  auto found = blocks_.find(blockId);
+  return found != blocks_.end() && !found->second.children &&
+         !found->second.activeUsers;
+}
+
 std::optional<CacheEvictionCandidate>
 KvCache::evictionCandidate(uint64_t after) const {
   auto candidate = after

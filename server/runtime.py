@@ -171,6 +171,7 @@ class GenerationRequest:
     # mask work. It is ownership only and is never serialized to the engine.
     image_owner: object | None = None
     return_progress: bool = False
+    session_id: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -584,6 +585,7 @@ class MultiplexedRuntime:
                 image_spans=request.image_spans,
                 image_pixels=request.image_pixels,
                 return_progress=request.return_progress,
+                session_id=request.session_id,
             )
             try:
                 encoded = wire.serialize_message(protocol_request)

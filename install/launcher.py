@@ -23,7 +23,7 @@ except ImportError:  # Executed directly by the source or packaged entry point.
 
 ROOT = paths.ROOT
 RUNTIME_DIR = paths.RUNTIME
-PORT = 8000
+PORT = 18080
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
 
@@ -31,8 +31,27 @@ class LauncherError(RuntimeError):
     pass
 
 
+def _base_url():
+    """Resolve the serving port recorded by the foreground launcher."""
+    try:
+        with (RUNTIME_DIR / "serve.lock").open() as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                owner = json.load(lock)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                return BASE_URL
+    except (OSError, UnicodeError, ValueError):
+        return BASE_URL
+    port = owner.get("port") if isinstance(owner, dict) else None
+    if type(port) is not int or not 1 <= port <= 65535:
+        return BASE_URL
+    return f"http://127.0.0.1:{port}"
+
+
 def _request_json(path, timeout=2):
-    request = urllib.request.Request(BASE_URL + path)
+    request = urllib.request.Request(_base_url() + path)
     if key := os.environ.get("SPLASH_API_KEY"):
         request.add_header("Authorization", f"Bearer {key}")
     try:
@@ -82,6 +101,19 @@ def _ensure_installed(model_id):
         raise LauncherError("model download or verification failed")
 
 
+def _ensure_prebuilt(model_id):
+    """Verify an already built source tree without downloads or model writes."""
+    if not paths.PYTHON.is_file() or not paths.BINARY.is_file():
+        raise LauncherError("prebuilt Splash Python and native binary are required")
+    metallib = paths.BINARY.with_suffix(".metallib")
+    if not metallib.is_file():
+        raise LauncherError("prebuilt Splash Metal library is required")
+    try:
+        model_artifacts.verify_installed(paths.MODELS, model_id=model_id, full=False)
+    except (model_artifacts.ModelError, OSError) as error:
+        raise LauncherError(f"prebuilt model verification failed: {error}") from error
+
+
 def _serve_lock_owner(lock):
     try:
         lock.seek(0)
@@ -118,7 +150,7 @@ def serve(args):
             ) from None
         lock.seek(0)
         lock.truncate()
-        json.dump({"pid": os.getpid(), "model": args.model, "port": PORT}, lock)
+        json.dump({"pid": os.getpid(), "model": args.model, "port": args.port}, lock)
         lock.flush()
         # Fail before downloads/builds if another service owns the default port.
         # The HTTP server also binds before loading weights, closing the race.
@@ -127,12 +159,15 @@ def serve(args):
             # not block a restart; a live listener still owns the address.
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                probe.bind(("127.0.0.1", PORT))
+                probe.bind(("127.0.0.1", args.port))
             except OSError:
                 raise LauncherError(
-                    f"127.0.0.1:{PORT} is in use; stop that service first"
+                    f"127.0.0.1:{args.port} is in use; stop that service first"
                 ) from None
-        _ensure_installed(args.model)
+        if args.prebuilt:
+            _ensure_prebuilt(args.model)
+        else:
+            _ensure_installed(args.model)
         root = model_artifacts.installed_root(paths.MODELS, args.model)
         command = [
             str(paths.PYTHON),
@@ -150,6 +185,8 @@ def serve(args):
             "auto" if args.max_memory is None else str(args.max_memory),
             "--max-context",
             "auto" if args.max_context is None else str(args.max_context),
+            "--port",
+            str(args.port),
         ]
         if args.max_image_pixels is not None:
             command.extend(["--max-image-pixels", str(args.max_image_pixels)])
@@ -194,7 +231,7 @@ def coding_client(args):
     command, environment = clients.command(
         args.command,
         path,
-        BASE_URL,
+        _base_url(),
         model,
         context,
         RUNTIME_DIR,
@@ -294,6 +331,14 @@ def parse_args(argv=None):
         help="context limit, e.g. 100K (default: auto)",
     )
     server.add_argument(
+        "--port", type=int, default=PORT, help="loopback port (default: 18080)"
+    )
+    server.add_argument(
+        "--prebuilt",
+        action="store_true",
+        help="verify existing binary and model; never build or download",
+    )
+    server.add_argument(
         "--allowed-host",
         action="append",
         default=[],
@@ -315,6 +360,8 @@ def parse_args(argv=None):
     if args.command == "serve" and args.api_key is not None:
         if not args.api_key or any(ord(c) <= 32 or ord(c) >= 127 for c in args.api_key):
             parser.error("API key must contain only visible ASCII characters")
+    if args.command == "serve" and not 1 <= args.port <= 65535:
+        parser.error("--port must be in [1, 65535]")
     if client_args and args.command == "serve":
         parser.error("arguments after -- are only supported for coding clients")
     args.client_args = client_args

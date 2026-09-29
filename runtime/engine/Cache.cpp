@@ -1,13 +1,17 @@
 #include "engine/Cache.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace splash::engine {
 
-Cache::Cache(KvPool &pool, CacheNamespace cacheNamespace)
-    : pool_(pool), kv_(pool, cacheNamespace, recency_), states_(kv_, recency_) {
+Cache::Cache(KvPool &pool, CacheNamespace cacheNamespace, bool sessionRetention,
+             uint64_t maxRetainedBytes)
+    : pool_(pool), sessionRetention_(sessionRetention),
+      maxRetainedBytes_(maxRetainedBytes),
+      kv_(pool, cacheNamespace, recency_), states_(kv_, recency_) {
 }
 
 void Cache::beginRequest(uint64_t requestId) {
@@ -32,6 +36,66 @@ void Cache::endRequest(uint64_t requestId) {
   for (uint64_t block : active.cachedBlocks)
     states_.touch(block);
   requests_.erase(found);
+  if (sessionRetention_) {
+    pruneUnretained();
+    trimSessionHeads();
+  }
+}
+
+void Cache::promoteSession(uint64_t sessionId, uint64_t requestId,
+                           uint32_t promptTokens) {
+  if (!sessionRetention_ || !sessionId)
+    return;
+  auto active = requests_.find(requestId);
+  if (active == requests_.end())
+    return;
+  auto previous = sessionHeads_.find(sessionId);
+  if (previous != sessionHeads_.end() && previous->second.requestId > requestId)
+    return;
+  const size_t fullBlocks = promptTokens / KvCache::pageTokens;
+  uint64_t block = fullBlocks && fullBlocks <= active->second.cachedBlocks.size()
+                       ? active->second.cachedBlocks[fullBlocks - 1]
+                       : 0;
+  sessionHeads_[sessionId] = {requestId, block, ++sessionRecency_};
+}
+
+std::unordered_set<uint64_t> Cache::retainedBlocks() const {
+  std::unordered_set<uint64_t> retained;
+  for (const auto &[session, head] : sessionHeads_) {
+    if (!head.block || !kv_.contains(head.block))
+      continue;
+    for (uint64_t block : kv_.chain(head.block).blocks)
+      retained.insert(block);
+  }
+  return retained;
+}
+
+void Cache::pruneUnretained() {
+  const auto retained = retainedBlocks();
+  for (uint64_t block : kv_.blockIdsNewestFirst()) {
+    if (retained.contains(block))
+      continue;
+    if (states_.contains(block))
+      static_cast<void>(states_.evict(block));
+    if (kv_.evictable(block) && !states_.contains(block))
+      kv_.erase(block);
+  }
+}
+
+void Cache::trimSessionHeads() {
+  auto oldest = [&]() {
+    return std::min_element(sessionHeads_.begin(), sessionHeads_.end(),
+                            [](const auto &left, const auto &right) {
+                              return left.second.recency < right.second.recency;
+                            });
+  };
+  while (!sessionHeads_.empty()) {
+    const uint64_t bytes = kv_.snapshot().bytes + states_.snapshot().bytes;
+    if (sessionHeads_.size() <= maxSessionHeads && bytes <= maxRetainedBytes_)
+      break;
+    sessionHeads_.erase(oldest());
+    pruneUnretained();
+  }
 }
 
 CacheLookup Cache::lookup(std::span<const uint32_t> prompt,

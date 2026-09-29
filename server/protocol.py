@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import IntEnum, IntFlag
 from typing import TypeAlias
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 FRAME_HEADER_BYTES = 24
 STATUS_SCHEMA_VERSION = 5
 # Largest top-k the native sampler keeps as candidates.
@@ -24,7 +24,7 @@ _MAGIC = b"SPLH"
 _HEADER = struct.Struct("<4sHHHHQI")
 # Replay can update the integer deadlines without decoding sampling floats.
 _REQUEST_HEAD = struct.Struct("<QBBBQQ")
-_REQUEST = struct.Struct(_REQUEST_HEAD.format + "IIIffIQB")
+_REQUEST = struct.Struct(_REQUEST_HEAD.format + "IIIffIQBQ")
 _IMAGE_SPAN = struct.Struct("<IIIIQQ")
 _CANCEL = struct.Struct("<Q")
 _MASK_RESPONSE = struct.Struct("<QQI")
@@ -41,7 +41,7 @@ _STATUS_JSON = struct.Struct("<QI")
 
 assert array.array("I").itemsize == 4 and sys.byteorder == "little"
 assert _HEADER.size == FRAME_HEADER_BYTES
-assert _REQUEST.size == 60
+assert _REQUEST.size == 68
 assert _IMAGE_SPAN.size == 32
 assert _START.size == 21
 assert _DONE.size == 41
@@ -209,6 +209,7 @@ class RequestFrame:
     image_spans: tuple[ImageSpan, ...] = ()
     image_pixels: bytes = b""
     return_progress: bool = False
+    session_id: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -633,6 +634,7 @@ def _request_issue(
     try:
         absolute = _u64(request.absolute_deadline_unix_micros, "absolute deadline")
         remaining = _u64(request.remaining_deadline_micros, "remaining deadline")
+        _u64(request.session_id, "session id")
         if not absolute or not remaining:
             raise ValueError("absolute and remaining deadlines must be non-zero")
     except ValueError as error:
@@ -1042,6 +1044,7 @@ def _encode_message(
                 message.sampling.top_k,
                 message.seed,
                 message.return_progress,
+                message.session_id,
             )
             + _pack_words(prompt)
             + b"".join(
@@ -1318,6 +1321,7 @@ def _decode_request(payload: bytes, limits: ProtocolLimits) -> RequestFrame:
         top_k,
         seed,
         return_progress,
+        session_id,
     ) = _REQUEST.unpack_from(payload)
     if return_progress > 1:
         _fail(
@@ -1389,6 +1393,7 @@ def _decode_request(payload: bytes, limits: ProtocolLimits) -> RequestFrame:
         tuple(image_spans),
         bytes(image_pixels),
         bool(return_progress),
+        session_id,
     )
     _raise_issue(_request_issue(request, limits))
     return request

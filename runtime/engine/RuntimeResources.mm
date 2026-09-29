@@ -483,7 +483,8 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
     }
     auto kvPool = std::make_unique<KvPool>(*kvPages);
     auto cache =
-        std::make_unique<engine::Cache>(*kvPool, cacheIdentity.cacheNamespace);
+        std::make_unique<engine::Cache>(*kvPool, cacheIdentity.cacheNamespace,
+                                        true);
 
     if (kvPages->declaredBytes() != budget.kvVirtualBytes ||
         kvPages->actualAllocatedBytes() > budget.kvVirtualBytes) {

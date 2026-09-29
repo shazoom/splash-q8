@@ -2,6 +2,7 @@
 """HTTP routes, protocol responses and serving-process startup."""
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -95,6 +96,7 @@ else:
 
 
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
+SESSION_HEADER = "X-Splash-Session-ID"
 MAX_CONTEXT_TOKENS = 262144
 HTTP_IO_TIMEOUT = 30.0
 CLIENT_DISCONNECT_POLL = 0.01
@@ -266,6 +268,39 @@ class FrontendHandler(BaseHTTPRequestHandler):
             self.connection.settimeout(self.server.io_timeout)
         return strict_json_loads(payload)
 
+    def _session_id(self):
+        """Map one bounded route session to a native cache identity."""
+        values = self.headers.get_all(SESSION_HEADER, [])
+        if not values:
+            return 0
+        if len(values) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", values[0]):
+            raise APIError(400, "invalid Splash session ID")
+        digest = hashlib.blake2b(values[0].encode("ascii"), digest_size=8).digest()
+        return int.from_bytes(digest, "little") or 1
+
+    def _estimate(self, body, deadline):
+        """Use generation preparation for exact prompt and output counts."""
+        protocol = body.get("protocol")
+        source = body.get("request")
+        if protocol not in {"chat", "responses", "messages"} or not isinstance(
+            source, dict
+        ):
+            raise APIError(400, "invalid estimate request")
+        if protocol == "responses":
+            job, _, _ = self.app.prepare_responses(source, deadline=deadline)
+        elif protocol == "messages":
+            chat = anthropic_to_chat_body(
+                source,
+                deadline=deadline,
+                thinking_resolver=self.app.thinking_codec.decode,
+            )
+            job, _, _ = self.app.prepare(
+                chat, deadline=deadline, clamp_output_budget=True
+            )
+        else:
+            job, _, _ = self.app.prepare(source, deadline=deadline)
+        return len(job.prompt_tokens), job.max_new_tokens
+
     def do_HEAD(self):
         self.do_GET()
 
@@ -295,6 +330,18 @@ class FrontendHandler(BaseHTTPRequestHandler):
             self._json(
                 200 if ready else 503,
                 {"status": "ready" if ready else "unavailable"},
+            )
+            return
+        if path == "/internal/capabilities":
+            self._json(
+                200,
+                {
+                    "mlx_run_integration": 1,
+                    "session_protocol_version": 6,
+                    "exact_estimate": True,
+                    "idle_cache_sessions": 16,
+                    "idle_cache_bytes": 8 * 1024**3,
+                },
             )
             return
         if path == "/status":
@@ -354,7 +401,11 @@ class FrontendHandler(BaseHTTPRequestHandler):
         # turn a supported endpoint into an unknown one.
         path = self.path.partition("?")[0]
         count_tokens = path == "/v1/messages/count_tokens"
-        prompt_only = count_tokens or path in ("/tokenize", "/apply-template")
+        prompt_only = count_tokens or path in (
+            "/tokenize",
+            "/apply-template",
+            "/internal/estimate",
+        )
         anthropic = path == "/v1/messages" or count_tokens
         if path not in (
             "/v1/chat/completions",
@@ -363,6 +414,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
             "/v1/messages/count_tokens",
             "/tokenize",
             "/apply-template",
+            "/internal/estimate",
         ):
             self._safe_error(APIError(404, "not found", "not_found"))
             return
@@ -392,6 +444,12 @@ class FrontendHandler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise APIError(400, "request body must be an object")
             deadline = self.app.request_deadline(body, started_at)
+            if path == "/internal/estimate":
+                input_tokens, output_tokens = self._estimate(body, deadline)
+                self._json(
+                    200, {"input_tokens": input_tokens, "output_tokens": output_tokens}
+                )
+                return
             if path == "/tokenize":
                 self._json(200, {"tokens": self.app.tokenize(body, deadline=deadline)})
                 return
@@ -449,6 +507,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
                 ):
                     raise APIError(400, "invalid streaming options")
                 job, thinking, has_tools = self.app.prepare(body, deadline=deadline)
+            job.session_id = self._session_id()
             job.return_progress = return_progress
             remaining_request_time(deadline)
             if self._client_disconnected():
@@ -1555,7 +1614,7 @@ def parse_args(argv=None):
     parser.add_argument("--allowed-host", action="append", default=[])
     parser.add_argument("--api-key", default=os.environ.get("SPLASH_API_KEY"))
     parser.add_argument("--no-webui", action="store_true")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--binary", default=str(ROOT / "build" / "splash"))
     args = parser.parse_args(argv)
     if args.api_key is not None:

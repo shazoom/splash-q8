@@ -300,6 +300,76 @@ void testReclaimDefersBehindInFlightRelease() {
           "final paced pass did not return the last empty extent");
 }
 
+void testSessionHeadsAndCompletionOrder() {
+  Backing backing(32);
+  KvPool pool(backing);
+  engine::Cache cache(pool, cacheNamespace(), true);
+  auto first = tokens(64, 100);
+  cache.beginRequest(1);
+  require(cache.ensureTokens(1, 64).granted(), "first prompt admission failed");
+  static_cast<void>(cache.publishCommittedBlocks(1, first, 64));
+  cache.promoteSession(7, 1, 64);
+  cache.endRequest(1);
+  require(cache.snapshot().kvCache.blocks == 2, "first session head was lost");
+
+  auto transient = tokens(64, 200);
+  cache.beginRequest(2);
+  require(cache.ensureTokens(2, 64).granted(), "transient admission failed");
+  static_cast<void>(cache.publishCommittedBlocks(2, transient, 64));
+  cache.endRequest(2);
+  require(cache.snapshot().kvCache.blocks == 2,
+          "sessionless prompt remained cached");
+
+  auto old = tokens(64, 300);
+  auto newest = tokens(64, 400);
+  for (const auto &[id, prompt] : {std::pair{3, old}, std::pair{4, newest}}) {
+    cache.beginRequest(id);
+    require(cache.ensureTokens(id, 64).granted(), "overlap admission failed");
+    static_cast<void>(cache.publishCommittedBlocks(id, prompt, 64));
+  }
+  cache.promoteSession(7, 4, 64);
+  cache.endRequest(4);
+  cache.promoteSession(7, 3, 64);
+  cache.endRequest(3);
+  require(cache.snapshot().kvCache.blocks == 2,
+          "older completion replaced or retained the newest prompt");
+  require(cache.lookup(tokens(65, 400)).kvBoundary == 64,
+          "newest prompt was not reusable");
+}
+
+void testSessionCountAndByteLimits() {
+  Backing backing(32);
+  KvPool pool(backing);
+  engine::Cache cache(pool, cacheNamespace(), true);
+  for (uint64_t session = 1; session <= 17; ++session) {
+    auto prompt = tokens(33, static_cast<uint32_t>(session * 100));
+    cache.beginRequest(session);
+    require(cache.ensureTokens(session, 32).granted(), "session admission failed");
+    static_cast<void>(cache.publishCommittedBlocks(session, prompt, 32));
+    cache.promoteSession(session, session, 33);
+    cache.endRequest(session);
+  }
+  require(cache.snapshot().kvCache.blocks == 16,
+          "session count did not evict the oldest head");
+  require(cache.lookup(tokens(33, 100)).kvBoundary == 0 &&
+              cache.lookup(tokens(33, 1700)).kvBoundary == 32,
+          "session limit retained the wrong prompt");
+
+  Backing boundedBacking(8);
+  KvPool boundedPool(boundedBacking);
+  engine::Cache bounded(boundedPool, cacheNamespace(), true, 2 * 4096);
+  for (uint64_t session = 1; session <= 3; ++session) {
+    auto prompt = tokens(33, static_cast<uint32_t>(session * 100));
+    bounded.beginRequest(session);
+    require(bounded.ensureTokens(session, 32).granted(), "byte-limit admission failed");
+    static_cast<void>(bounded.publishCommittedBlocks(session, prompt, 32));
+    bounded.promoteSession(session, session, 33);
+    bounded.endRequest(session);
+  }
+  require(bounded.snapshot().kvCache.bytes <= 2 * 4096,
+          "retained idle KV exceeded the byte limit");
+}
+
 int main() {
   try {
     testReclaimDefersBehindInFlightRelease();
@@ -309,6 +379,8 @@ int main() {
     testPhysicalGrowthReclaimsOneWholeCachedExtent();
     testFragmentedColdKvPrecedesNewerState();
     testReplacementPreservesBackingEvenWhenExtentBecomesEmpty();
+    testSessionHeadsAndCompletionOrder();
+    testSessionCountAndByteLimits();
     std::cout << "engine cache tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace splash::engine {
@@ -67,12 +68,18 @@ enum class CacheReclaimMode { ReuseBacking, ReleaseBacking };
 // composite states. Physical recurrent-state cells remain model-owned.
 class Cache final {
 public:
-  Cache(KvPool &pool, CacheNamespace cacheNamespace);
+  static constexpr uint32_t maxSessionHeads = 16;
+  static constexpr uint64_t maxIdleCacheBytes = 8ULL * 1024 * 1024 * 1024;
+  Cache(KvPool &pool, CacheNamespace cacheNamespace,
+        bool sessionRetention = false,
+        uint64_t maxRetainedBytes = maxIdleCacheBytes);
   Cache(const Cache &) = delete;
   Cache &operator=(const Cache &) = delete;
 
   void beginRequest(uint64_t requestId);
   void endRequest(uint64_t requestId);
+  void promoteSession(uint64_t sessionId, uint64_t requestId,
+                      uint32_t promptTokens);
 
   // Pin the usable prefix before potentially evicting for active allocations.
   // Accounting is separate: failed admission retries are not extra samples.
@@ -141,13 +148,26 @@ private:
   [[nodiscard]] std::optional<CacheEvictionCandidate>
   oldestStateFreeKvBlock() const;
   [[nodiscard]] uint64_t reclaimEmptyExtents();
+  void pruneUnretained();
+  [[nodiscard]] std::unordered_set<uint64_t> retainedBlocks() const;
+  void trimSessionHeads();
+
+  struct SessionHead {
+    uint64_t requestId = 0;
+    uint64_t block = 0;
+    uint64_t recency = 0;
+  };
 
   KvPool &pool_;
+  bool sessionRetention_;
+  uint64_t maxRetainedBytes_;
   CacheRecency recency_;
   KvCache kv_;
   StateCache states_;
   std::unordered_map<uint64_t, Request> requests_;
   CacheLookupSnapshot lookup_;
+  std::unordered_map<uint64_t, SessionHead> sessionHeads_;
+  uint64_t sessionRecency_ = 0;
 };
 
 } // namespace splash::engine

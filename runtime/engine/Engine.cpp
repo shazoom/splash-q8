@@ -954,6 +954,8 @@ void Engine::finish(Request &active, EngineFinishReason reason) {
     ++counters_.cancelled;
   } else {
     static_cast<void>(retireCheckpoint(active));
+    cache_.promoteSession(active.request.sessionId, active.request.id,
+                          active.promptTokens);
     ++counters_.completed;
   }
   release(active);

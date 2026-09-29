@@ -96,6 +96,8 @@ public:
   [[nodiscard]] Chain chain(uint64_t blockId) const;
   [[nodiscard]] bool contains(uint64_t blockId) const noexcept;
   [[nodiscard]] uint32_t chainLength(uint64_t blockId) const;
+  [[nodiscard]] std::vector<uint64_t> blockIdsNewestFirst() const;
+  [[nodiscard]] bool evictable(uint64_t blockId) const noexcept;
 
   // Only a leaf unused by active requests can be removed. The caller handles
   // any composite state attached to the returned block before erase().

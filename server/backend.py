@@ -83,6 +83,7 @@ class Job:
     top_p: float
     top_k: int
     deadline: float
+    session_id: int = 0
     priority: int = REQUEST_PRIORITIES["normal"]
     stop_sequences: tuple[str, ...] = ()
     thinking: bool = False
@@ -461,6 +462,7 @@ class NativeBackend:
             image_pixels=job.image_pixels,
             image_owner=job.image_owner,
             return_progress=job.return_progress,
+            session_id=job.session_id,
         )
 
     def submit(self, job):

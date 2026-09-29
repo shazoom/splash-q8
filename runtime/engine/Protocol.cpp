@@ -21,7 +21,7 @@ std::string_view failureClassName(FailureClass failureClass);
 
 constexpr std::array<uint8_t, 4> kMagic{'S', 'P', 'L', 'H'};
 
-constexpr uint64_t kRequestFixedBytes = 60;
+constexpr uint64_t kRequestFixedBytes = 68;
 constexpr uint64_t kImageSpanBytes = 32;
 constexpr uint64_t kCancelFixedBytes = 8;
 constexpr uint64_t kMaskResponseFixedBytes = 20;
@@ -632,6 +632,7 @@ ProtocolResult<Frame> encodeRequest(const RequestFrame &request,
   writer.u32(request.sampling.topK);
   writer.u64(request.seed);
   writer.u8(request.returnProgress);
+  writer.u64(request.sessionId);
   for (uint32_t token : request.promptTokens)
     writer.u32(token);
   for (const ImageSpanFrame &span : request.imageSpans) {
@@ -833,7 +834,7 @@ ProtocolResult<Message> decodeRequest(const Frame &frame,
       !reader.f32(request.sampling.temperature) ||
       !reader.f32(request.sampling.topP) ||
       !reader.u32(request.sampling.topK) || !reader.u64(request.seed) ||
-      !reader.u8(returnProgress)) {
+      !reader.u8(returnProgress) || !reader.u64(request.sessionId)) {
     return failure<Message>(makeIssue(FailureClass::ProtocolFatal,
                                       IssueCode::InvalidPayloadLength, 0,
                                       "request fixed payload is truncated"));

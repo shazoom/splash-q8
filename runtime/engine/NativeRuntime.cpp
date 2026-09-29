@@ -256,6 +256,7 @@ bool NativeRuntime::handleRequest(protocol::RequestFrame &request) {
   try {
     EngineRequest engineRequest;
     engineRequest.id = request.requestId;
+    engineRequest.sessionId = request.sessionId;
     engineRequest.priority = mapPriority(request.priority);
     engineRequest.cohort = mapCohort(request.cohort);
     engineRequest.prompt = std::move(request.promptTokens);

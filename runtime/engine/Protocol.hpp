@@ -14,7 +14,7 @@
 
 namespace splash::protocol {
 
-inline constexpr uint16_t kProtocolVersion = 5;
+inline constexpr uint16_t kProtocolVersion = 6;
 inline constexpr size_t kFrameHeaderBytes = 24;
 inline constexpr uint32_t kStatusSchemaVersion = 5;
 // Image pixels travel inside the request frame; a multi-image agent turn can
@@ -180,6 +180,7 @@ struct RequestFrame {
   Cohort cohort = Cohort::Greedy;
   ConstraintMode constraint = ConstraintMode::None;
   bool returnProgress = false;
+  uint64_t sessionId = 0;
 
   bool operator==(const RequestFrame &) const = default;
 };

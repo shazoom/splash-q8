@@ -597,6 +597,52 @@ class ServerTest(unittest.TestCase):
         self.harnesses.append(harness)
         return harness
 
+    def test_internal_estimate_prepares_all_protocols_without_submission(self):
+        runtime = FakeRuntime()
+        harness = self.harness(runtime)
+        status, _, payload = harness.request("GET", "/internal/capabilities")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["session_protocol_version"], 6)
+        for protocol, body in (
+            ("chat", self.body()),
+            ("responses", self.responses_body()),
+            ("messages", self.anthropic_body()),
+        ):
+            with self.subTest(protocol=protocol):
+                status, _, payload = harness.request(
+                    "POST",
+                    "/internal/estimate",
+                    {"protocol": protocol, "request": body},
+                )
+                self.assertEqual(status, 200)
+                estimate = json.loads(payload)
+                self.assertGreater(estimate["input_tokens"], 0)
+                self.assertGreater(estimate["output_tokens"], 0)
+        self.assertEqual(runtime.calls, [])
+
+    def test_session_header_reaches_native_request_and_invalid_header_rejects(self):
+        runtime = FakeRuntime()
+        harness = self.harness(runtime)
+        status, _, _ = harness.request(
+            "POST",
+            "/v1/chat/completions",
+            self.body(),
+            {"Content-Type": "application/json", "X-Splash-Session-ID": "agent_1"},
+        )
+        self.assertEqual(status, 200)
+        expected = int.from_bytes(
+            hashlib.blake2b(b"agent_1", digest_size=8).digest(), "little"
+        )
+        self.assertEqual(runtime.requests[0].session_id, expected)
+        status, _, _ = harness.request(
+            "POST",
+            "/v1/chat/completions",
+            self.body(),
+            {"Content-Type": "application/json", "X-Splash-Session-ID": "../bad"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(len(runtime.requests), 1)
+
     def test_expected_client_disconnect_does_not_print_server_traceback(self):
         harness = self.harness(FakeRuntime())
         with mock.patch.object(api.ThreadingHTTPServer, "handle_error") as parent:
