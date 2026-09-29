@@ -15,6 +15,11 @@ there is nothing to configure.
 
 ## Q8 fork: run the 8-bit model without compiling
 
+The `mlx-run-integration` source branch adds session prompt retention and
+defaults to loopback port 18080. See [the integration contract](docs/mlx_run_integration.md).
+The prebuilt installer below still downloads the earlier upstream Q8 release;
+it does not contain this branch's integration changes.
+
 This branch adds 8-bit weight support. The release below is **prebuilt**:
 no Xcode, no Metal toolchain, no `make`. You need an Apple Silicon Mac on
 macOS 26.4 or later, and 48 GB of unified memory (64 GB recommended; the

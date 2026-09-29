@@ -379,12 +379,20 @@ class Frontend:
         return started_at + min(timeout, self.request_timeout)
 
     def prepare(
-        self, body, tool_namespaces=None, *, deadline=None, clamp_output_budget=False
+        self,
+        body,
+        tool_namespaces=None,
+        *,
+        deadline=None,
+        clamp_output_budget=False,
+        allow_oversize=False,
     ):
         if deadline is None:
             deadline = self.request_deadline(body)
         with self._preparation(deadline):
-            return self._prepare(body, tool_namespaces, deadline, clamp_output_budget)
+            return self._prepare(
+                body, tool_namespaces, deadline, clamp_output_budget, allow_oversize
+            )
 
     def count_tokens(self, body, *, deadline=None):
         if deadline is None:
@@ -589,7 +597,14 @@ class Frontend:
             )
         return RenderedPrompt(rendered, tokens, images, positions, thinking)
 
-    def _prepare(self, body, tool_namespaces, deadline, clamp_output_budget=False):
+    def _prepare(
+        self,
+        body,
+        tool_namespaces,
+        deadline,
+        clamp_output_budget=False,
+        allow_oversize=False,
+    ):
         nullable = {
             "temperature",
             "top_p",
@@ -666,7 +681,9 @@ class Frontend:
             raise APIError(
                 400, "stop cannot be combined with tools or structured output"
             )
-        rendered = self._render_prompt(prompt, deadline)
+        rendered = self._render_prompt(
+            prompt, deadline, check_context=not allow_oversize
+        )
         prompt_tokens, prepared_images = rendered.tokens, rendered.images
         image_positions, thinking = rendered.image_positions, rendered.thinking
         constraint = None
@@ -693,18 +710,20 @@ class Frontend:
                 prompt_tokens, prepared_images, image_positions
             )
         remaining_request_time(deadline)
-        if len(prompt_tokens) >= self.max_context:
+        if len(prompt_tokens) >= self.max_context and not allow_oversize:
             raise ContextLengthError(len(prompt_tokens), self.max_context)
         max_new = body.get(
             "max_completion_tokens",
             body.get(
                 "max_tokens",
-                min(self.default_max_new, self.max_context - len(prompt_tokens)),
+                self.default_max_new
+                if allow_oversize
+                else min(self.default_max_new, self.max_context - len(prompt_tokens)),
             ),
         )
         if not isinstance(max_new, int) or isinstance(max_new, bool) or max_new <= 0:
             raise APIError(400, "max_completion_tokens must be a positive integer")
-        if len(prompt_tokens) + max_new > self.max_context:
+        if len(prompt_tokens) + max_new > self.max_context and not allow_oversize:
             if not clamp_output_budget:
                 raise APIError(
                     400,
@@ -751,7 +770,7 @@ class Frontend:
         )
         return job, thinking, bool(tools)
 
-    def prepare_responses(self, body, *, deadline=None):
+    def prepare_responses(self, body, *, deadline=None, allow_oversize=False):
         if deadline is None:
             deadline = self.request_deadline(body)
         store = body.get("store")
@@ -771,7 +790,9 @@ class Frontend:
         previous_items = previous.history_items if previous is not None else []
         chat = responses_to_chat_body(body, previous_items)
         namespaces = chat.pop("_tool_namespaces")
-        job, thinking, has_tools = self.prepare(chat, namespaces, deadline=deadline)
+        job, thinking, has_tools = self.prepare(
+            chat, namespaces, deadline=deadline, allow_oversize=allow_oversize
+        )
         job.response_store = store
         job.response_previous_id = previous_id
         job.response_history_items = [

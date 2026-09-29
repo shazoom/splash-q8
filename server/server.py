@@ -287,18 +287,18 @@ class FrontendHandler(BaseHTTPRequestHandler):
         ):
             raise APIError(400, "invalid estimate request")
         if protocol == "responses":
-            job, _, _ = self.app.prepare_responses(source, deadline=deadline)
+            job, _, _ = self.app.prepare_responses(
+                source, deadline=deadline, allow_oversize=True
+            )
         elif protocol == "messages":
             chat = anthropic_to_chat_body(
                 source,
                 deadline=deadline,
                 thinking_resolver=self.app.thinking_codec.decode,
             )
-            job, _, _ = self.app.prepare(
-                chat, deadline=deadline, clamp_output_budget=True
-            )
+            job, _, _ = self.app.prepare(chat, deadline=deadline, allow_oversize=True)
         else:
-            job, _, _ = self.app.prepare(source, deadline=deadline)
+            job, _, _ = self.app.prepare(source, deadline=deadline, allow_oversize=True)
         return len(job.prompt_tokens), job.max_new_tokens
 
     def do_HEAD(self):

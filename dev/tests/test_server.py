@@ -620,6 +620,15 @@ class ServerTest(unittest.TestCase):
                 self.assertGreater(estimate["output_tokens"], 0)
         self.assertEqual(runtime.calls, [])
 
+        oversized = self.harness(FakeRuntime(), max_context=2)
+        status, _, payload = oversized.request(
+            "POST",
+            "/internal/estimate",
+            {"protocol": "chat", "request": self.body(max_tokens=19)},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["output_tokens"], 19)
+
     def test_session_header_reaches_native_request_and_invalid_header_rejects(self):
         runtime = FakeRuntime()
         harness = self.harness(runtime)
